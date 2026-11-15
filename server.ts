@@ -2972,6 +2972,16 @@ try {
 • Если мяч попал в ворота, но гол ОТМЕНЁН / НЕ ЗАСЧИТАН (офсайд, фол, игра рукой, отмена после VAR) — НИ В КОЕМ СЛУЧАЕ не ставь этому эпизоду "type": "goal" или "own_goal"! Оформляй такой эпизод через "shot" / "highlight" -> "var" / "offside" / "foul" и ПРЯМО и ОДНОЗНАЧНО пиши в тексте: «ГОЛ ОТМЕНЁН!» или «ГОЛ НЕ ЗАСЧИТАН!» с указанием причины и того, что счёт остался прежним (например: «Счёт остаётся 0:0!»).
 • Строгое соответствие счёта: во всех репликах ("goal", "halftime", "fulltime", "crowd", "tactical_note") называй ТОЛЬКО реальный счёт по уже случившимся событиям "goal"/"own_goal" и ТОЛЬКО их реальных авторов. Если голов не было — счёт 0:0, не выдумывай голы задним числом!
 
+═══ РАЗДЕЛ 2: ПРОВЕРКИ ВАР (VAR) — ДЛИТЕЛЬНОСТЬ, НАПРЯЖЕНИЕ И ЭФИР ═══
+• НИКАКИХ мгновенных проверок ВАР за 10–30 секунд и никакой тишины во время паузы! В реальном футболе ВАР проверяет эпизоды медленно, а комментаторы и режиссёры эфира всё это время держат зрителей в курсе.
+• Обычная проверка ВАР (понятный офсайд, быстрая проверка фола) занимает 1.5–2.5 минуты игрового времени; сложный / спорный эпизод (рисование офсайдных линий, игра рукой в штрафной, потенциальный пенальти, возможная красная карточка, поход к монитору у бровки) — 3–5 минут игрового времени.
+• Во время КАЖДОЙ паузы ВАР каждые 25–50 секунд игрового времени показывай живую работу эфира и реакцию стадиона (событиями с типом "var", "commentator_intro", "crowd", "tactical_note" или "verbal_warning", без выдумывания голов/фолов):
+  1) Старт проверки ("var"): арбитр останавливает игру, прикладывает палец к наушнику, ВАР-комната открывает повторы.
+  2) Комментарий в паузе ("commentator_intro" / "crowd" / "tactical_note"): режиссёр трансляции крутит замедленные повторы с разных камер, комментаторы спорят и разбирают детали эпизода, трибуны ревут, игроки окружили судью, тренеры нервничают у бровки.
+  3) Развитие ("var"): рисуются виртуальные линии офсайда или главного судью приглашают к монитору у бровки — напряжение зашкаливает.
+  4) Финал ("var" / "penalty" / "red" / "offside" / подтверждённый "goal"): окончательное решение арбитра.
+• Потраченное на долгий ВАР время ОБЯЗАТЕЛЬНО компенсируй в добавленных минутах тайма (45+... или 90+..., то есть min 46..51 перед halftime и min 91..97 перед fulltime).
+
 ═══ РАЗДЕЛ 10: ФОРМАТ ВЫВОДА (СТРОГО JSON) ═══
 Верни строго один JSON-объект без markdown-обёртки:
 {
@@ -7565,6 +7575,109 @@ function isDisallowedGoalText(txt: string) {
   const confirmRe = /(?:(?:гол|взятие\s+ворот)\s+(?:подтвержд|засчитан|в\s+силе)|подтвержда[а-яё]+\s+гол|оста[её]т[а-яё]*\s+гол\s+в\s+силе)/i;
   return cancelRe.test(s) && !confirmRe.test(s);
 }
+function isVarConcludedText(txt: string) {
+  const s = String(txt || "");
+  if (!s) return false;
+  return /(?:решени[ея]\s+принят|вердикт|окончательн[а-яё]*\s+решени|отмен[её]н|отменя[ею]т|не\s+засчитан|не\s+засчитыва|подтвержд|засчитан|в\s+силе|назначен\s+пенальти|пенальти\s+назначен|пенальти\s+не\s+будет|нет\s+пенальти|указ[аы]вает\s+на\s+точку|став[ия]т\s+на\s+точку|игра\s+продолж|спорный\s+мяч|красная\s+отмен|красную\s+карточку\s+отмен|оста[её]т[а-яё]*\s+первоначальн|гол\s+засчитан|нет\s+гола)/i.test(s);
+}
+function isComplexVarText(txt: string) {
+  const s = String(txt || "");
+  return /(?:монит|экран|бровк|лини[ияюей]|миллиметр|погранич|сложн|спорн|красн|удален|пенальти|рукой|игр[аеу]\s+рукой|долг|затягива|офсайд|напряжен)/i.test(s);
+}
+function computeLiveEventDelayMs(e: any, nx: any, settings: any) {
+  if (!nx) return 1500;
+  const secPerMin = Math.max(0.5, Number(settings?.secPerMin) || 7);
+  const dm = Math.max(0, (nx.min * 60 + (nx.sec || 0) - (e.min * 60 + (e.sec || 0))) / 60);
+  let d = clamp(dm * secPerMin * 1e3, Math.min(900, secPerMin * 1e3), 2e4);
+  const eIsOngoingVar = !!(e.varPause || (e.type === "var" && !isVarConcludedText(e.text || "")));
+  if (eIsOngoingVar) {
+    const scale = clamp(secPerMin / 7, 0.25, 2.2);
+    const complex = isComplexVarText(`${e.text || ""} ${nx.text || ""}`) || dm >= 2.1;
+    const nxIsMidVar = !!(nx.varPause || (nx.type === "var" && !isVarConcludedText(nx.text || "")) || (["commentator_intro", "crowd", "tactical_note", "verbal_warning"].includes(nx.type) && dm < 1.3));
+    if (nxIsMidVar && dm < 1.35) {
+      const midFloor = Math.round(4800 * scale);
+      const midMax = Math.round(9200 * scale);
+      d = clamp(Math.max(midFloor, dm * secPerMin * 1e3 * 1.1), midFloor, midMax);
+    } else if (dm < 1.35) {
+      const finFloor = Math.round((complex ? 8200 : 6200) * scale);
+      const finMax = Math.round((complex ? 14000 : 10500) * scale);
+      d = clamp(Math.max(finFloor, dm * secPerMin * 1e3 * 1.35), finFloor, finMax);
+    } else {
+      const varFloor = Math.round((complex ? 15500 : 9500) * scale);
+      const varMax = Math.round((complex ? 36000 : 24000) * scale);
+      const varScaled = dm * secPerMin * 1e3 * (complex ? 1.25 : 1.1);
+      d = clamp(Math.max(varFloor, varScaled), varFloor, varMax);
+    }
+  }
+  if (e.type === "halftime") d = Math.max(d, (Number(settings?.breakSec) || 60) * 1e3);
+  return Math.round(d);
+}
+function buildVarPauseCommentaryBeat(cur: any, nxt: any, ctx: any, beatIdx: number, totalBeats: number, usedTexts?: Set<string>) {
+  const curLow = `${cur.text || ""}`.toLowerCase();
+  const combined = `${cur.text || ""} ${nxt.text || ""}`.toLowerCase();
+  const hName = ctx?.sides?.home?.name || "хозяева";
+  const aName = ctx?.sides?.away?.name || "гости";
+  const playerHint = cur.players?.[0] || nxt.players?.[0] || "";
+  const isMon = /монит|экран|бровк/i.test(curLow);
+  const isOffside = /офсайд|лини|вне\s+игр/i.test(combined);
+  const isRed = /красн|удален|груб|шипами|стык/i.test(combined);
+  const isPen = /пенальти|рукой|рук[аеу]|штрафн|точк|паден/i.test(combined);
+  const poolOffside = [
+    { type: "commentator_intro", text: `Комментаторы разбирают стоп-кадр в замедленном повторе: линия обороны выстроилась максимально плотно${playerHint ? `, под вопросом позиция ${playerHint}` : ""}.` },
+    { type: "crowd", text: `Трибуны гудят в нетерпении — пока в ВАР-комнате ищут точный момент передачи, футболисты ${hName} и ${aName} обступили арбитра.` },
+    { type: "var", text: `На экран трансляции выводят графику с виртуальными линиями офсайда — миллиметры решают судьбу эпизода, пауза затягивается.` }
+  ];
+  const poolPen = [
+    { type: "commentator_intro", text: `Режиссёр трансляции крутит повтор из-за ворот крупным планом: комментатор в эфире подробно разбирает контакт${playerHint ? ` с участием ${playerHint}` : ""}.` },
+    { type: "crowd", text: `На стадионе нарастает шум: болельщики давят на судейскую бригаду, скамейки ${hName} и ${aName} эмоционально реагируют у бровки.` },
+    { type: "var", text: `Видеоассистенты пересматривают эпизод с нескольких ракурсов — арбитр по-прежнему держит палец у наушника, проверяя детали.` }
+  ];
+  const poolRed = [
+    { type: "commentator_intro", text: `В прямом эфире показывают жёсткий стык в замедлении с разных камер — комментатор оценивает высоту поднятой ноги и степень риска.` },
+    { type: "crowd", text: `Вокруг арбитра кипят страсти: капитаны пытаются остудить партнёров, пока судьи ВАР оценивают тяжесть нарушения.` },
+    { type: "tactical_note", text: `Запасные обеих команд внимательно следят за паузой у кромки поля — возможное удаление способно полностью перевернуть план на игру.` }
+  ];
+  const poolMon = [
+    { type: "commentator_intro", text: `Оператор крупно ведёт главного судью у монитора — комментатор в реальном времени оценивает те же ракурсы, что и арбитр.` },
+    { type: "tactical_note", text: `Пока тянется просмотр на мониторе, голкиперы и полевые игроки поддерживают тонус короткими передачами и слушают подсказки со скамеек.` },
+    { type: "crowd", text: `Решающие секунды просмотра: стадион замер перед вердиктом, тренеры не отрываются от поля.` }
+  ];
+  const poolGen = [
+    { type: "commentator_intro", text: `Пока игра остановлена, комментаторы детально разбирают замедленный повтор момента с разных камер трансляции.` },
+    { type: "crowd", text: `Пауза затягивается, трибуны реагируют свистом и аплодисментами — напряжение на стадионе заметно растёт.` },
+    { type: "var", text: `ВАР-комната продолжает проверку ключевого фрагмента атаки, арбитр ждёт подтверждения в наушник.` }
+  ];
+  const pool = isMon ? poolMon : isOffside ? poolOffside : isRed ? poolRed : isPen ? poolPen : poolGen;
+  const fallbackPool = [...pool, ...poolGen, ...poolMon, ...poolPen, ...poolOffside];
+  const startIdx = Math.abs(Math.round((cur.min || 1) * 7 + (cur.sec || 0) + beatIdx + totalBeats)) % pool.length;
+  let picked = pool[startIdx];
+  if (usedTexts) {
+    let foundUnused = null;
+    for (let k = 0; k < pool.length; k++) {
+      const cand = pool[(startIdx + k) % pool.length];
+      if (!usedTexts.has(cand.text)) {
+        foundUnused = cand;
+        break;
+      }
+    }
+    if (foundUnused) {
+      picked = foundUnused;
+    } else {
+      const anyUnused = fallbackPool.find((x) => !usedTexts.has(x.text));
+      if (anyUnused) picked = anyUnused;
+    }
+    usedTexts.add(picked.text);
+  }
+  return {
+    type: picked.type,
+    team: "none",
+    players: [],
+    pids: [],
+    text: picked.text,
+    varPause: true
+  };
+}
+var CRITICAL_EVENT_TYPES = /* @__PURE__ */ new Set(["goal", "own_goal", "red", "penalty", "var"]);
 function normalizeEvents(raw, a, b, ctx, prev, minEv = 3) {
   if (!Array.isArray(raw) || raw.length < minEv) throw new Error("\u0441\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u0430\u043B\u043E \u0441\u043E\u0431\u044B\u0442\u0438\u0439");
   const idx = indexNames(ctx), probs = [], fatalProbs: string[] = [], unknown = /* @__PURE__ */ new Set();
@@ -7588,7 +7701,7 @@ function normalizeEvents(raw, a, b, ctx, prev, minEv = 3) {
       } else if (type === "fulltime") {
         min = 90;
       } else {
-        if (type === "goal" || type === "own_goal") fatalProbs.push("у события гола отсутствует минута");
+        if (CRITICAL_EVENT_TYPES.has(type)) fatalProbs.push(`у события ${type} отсутствует минута`);
         probs.push("\u043D\u0435\u0442 \u043C\u0438\u043D\u0443\u0442\u044B");
         continue;
       }
@@ -7600,11 +7713,11 @@ function normalizeEvents(raw, a, b, ctx, prev, minEv = 3) {
       min = min === 0 ? -1 : clamp(min, -20, -1);
     } else if (min < 0) {
       if (!PRE_TYPES.has(type)) {
-        if (a === 1 && !["goal", "own_goal", "yellow", "red", "sub", "penalty"].includes(type)) {
+        if (a === 1 && !["goal", "own_goal", "yellow", "red", "sub", "penalty", "var"].includes(type)) {
           type = "commentator_intro";
           min = clamp(min, -20, -1);
         } else {
-          if (type === "goal" || type === "own_goal") fatalProbs.push("у события гола некорректная минута");
+          if (CRITICAL_EVENT_TYPES.has(type)) fatalProbs.push(`у события ${type} некорректная минута`);
           probs.push("\u043D\u0435\u0442 \u043C\u0438\u043D\u0443\u0442\u044B");
           continue;
         }
@@ -7615,7 +7728,7 @@ function normalizeEvents(raw, a, b, ctx, prev, minEv = 3) {
         min = clamp(min, -20, -1);
       }
     } else if (min < a - 1 || min > b + 10) {
-      if (type === "goal" || type === "own_goal") fatalProbs.push(`гол на минуте ${min} вне периода ${a}–${b}`);
+      if (CRITICAL_EVENT_TYPES.has(type)) fatalProbs.push(`событие ${type} на минуте ${min} вне периода ${a}–${b}`);
       probs.push(`\u043C\u0438\u043D\u0443\u0442\u0430 ${min} \u0432\u043D\u0435 \u043F\u0435\u0440\u0438\u043E\u0434\u0430 ${a}\u2013${b}`);
       continue;
     }
@@ -7771,6 +7884,61 @@ function normalizeEvents(raw, a, b, ctx, prev, minEv = 3) {
   if (fatalProbs.length > 0) throw new Error([...new Set(fatalProbs)].slice(0, 4).join("; "));
   if (probs.length > 3) throw new Error([...new Set(probs)].slice(0, 6).join("; "));
   if (!out.length && minEv > 0) throw new Error("\u043D\u0435\u0442 \u0432\u0430\u043B\u0438\u0434\u043D\u044B\u0445 \u0441\u043E\u0431\u044B\u0442\u0438\u0439");
+  // Enforce realistic match-clock waiting time for ongoing VAR checks (slow & tense, especially complex checks)
+  if (minEv > 0 && out.length > 1) {
+    const maxAllowedMin = (b === 45 || b >= 90) ? b + 9 : b + 2;
+    const maxAllowedSec = maxAllowedMin * 60 + 50;
+    for (let i = 0; i < out.length - 1; i++) {
+      const cur = out[i];
+      const nxt = out[i + 1];
+      if (cur.min < 0 || nxt.min < 0 || cur.type !== "var" || isVarConcludedText(cur.text)) continue;
+      if (nxt.type === "kickoff") continue;
+      const tCur = cur.min * 60 + (cur.sec || 0);
+      const tNxt = nxt.min * 60 + (nxt.sec || 0);
+      const curGap = tNxt - tCur;
+      const complex = isComplexVarText(`${cur.text || ""} ${nxt.text || ""}`);
+      const isStagedVar = nxt.type === "var" && !isVarConcludedText(nxt.text);
+      const minGap = isStagedVar ? (complex ? 85 : 65) : (complex ? 140 : 95);
+      if (curGap < minGap) {
+        const lastT = out[out.length - 1].min * 60 + (out[out.length - 1].sec || 0);
+        const shift = Math.max(0, Math.min(minGap - curGap, maxAllowedSec - lastT));
+        if (shift > 0) {
+          for (let j = i + 1; j < out.length; j++) {
+            const nj = out[j].min * 60 + (out[j].sec || 0) + shift;
+            out[j].min = Math.floor(nj / 60);
+            out[j].sec = nj % 60;
+          }
+        }
+      }
+    }
+    // Fill quiet VAR pauses (>= 65s gaps) with live commentator / replay / stadium beats so broadcasts stay lively
+    const withCommentary: any[] = [];
+    const usedVarTexts = new Set<string>();
+    for (let i = 0; i < out.length; i++) {
+      const cur = out[i];
+      withCommentary.push(cur);
+      const nxt = out[i + 1];
+      if (!nxt || cur.min < 0 || nxt.min < 0 || cur.type !== "var" || isVarConcludedText(cur.text) || nxt.type === "kickoff") continue;
+      const tCur = cur.min * 60 + (cur.sec || 0);
+      const tNxt = nxt.min * 60 + (nxt.sec || 0);
+      const gap = tNxt - tCur;
+      if (gap >= 65) {
+        const beatCount = clamp(Math.floor(gap / 42), 1, 3);
+        const stepSec = gap / (beatCount + 1);
+        for (let bIdx = 0; bIdx < beatCount; bIdx++) {
+          const tBeat = Math.round(tCur + stepSec * (bIdx + 1));
+          if (tBeat <= tCur + 8 || tBeat >= tNxt - 8) continue;
+          const beat = buildVarPauseCommentaryBeat(cur, nxt, ctx, bIdx, beatCount, usedVarTexts);
+          withCommentary.push({
+            ...beat,
+            min: Math.floor(tBeat / 60),
+            sec: tBeat % 60
+          });
+        }
+      }
+    }
+    out = withCommentary;
+  }
   const lastMin = out.length ? out[out.length - 1].min : 90;
   if (b === 45 && !out.some((e) => e.type === "halftime")) out.push({ min: Math.max(45, lastMin), sec: 59, team: "none", type: "halftime", players: [], pids: [], text: "\u0421\u0432\u0438\u0441\u0442\u043E\u043A \u2014 \u043F\u0435\u0440\u0435\u0440\u044B\u0432." });
   if (b >= 90 && !out.some((e) => e.type === "fulltime")) out.push({ min: Math.max(90, lastMin), sec: 59, team: "none", type: "fulltime", players: [], pids: [], text: "\u0424\u0438\u043D\u0430\u043B\u044C\u043D\u044B\u0439 \u0441\u0432\u0438\u0441\u0442\u043E\u043A!" });
@@ -7902,10 +8070,48 @@ function fakePeriod(a, b, ctx, prev) {
       const t = pick(Q), l = pick(P);
       push(m, 50, o, "tackle", [t, l], `${ctx.names[t]} отбирает мяч у ${ctx.names[l]}.`);
       hold = o;
+    } else if (r < 0.425 && m + 4 <= b) {
+      const att = pick(P.filter((p) => GROUP[ctx.pos[p]] !== "gk")) || P[0];
+      const def = pick(Q.filter((p) => GROUP[ctx.pos[p]] !== "gk")) || Q[0];
+      const varKind = R();
+      if (varKind < 0.45) {
+        push(m, 15, s, "highlight", [att], `${ctx.names[att]} отправляет мяч в сетку, но боковой держит флажок опущенным — эпизод на проверке!`);
+        push(m, 30, "none", "var", [att], `Пауза в игре: арбитр прикладывает палец к наушнику, ВАР изучает возможный офсайд.`);
+        push(m + 1, 10, "none", "commentator_intro", [], `Комментаторы разбирают стоп-кадр в замедленном повторе — линия защиты плотная, момент очень пограничный.`, { varPause: true });
+        push(m + 1, 50, "none", "var", [att], `Напряжение на стадионе растёт — видеоассистенты продолжают чертить офсайдные линии, тренерский штаб ${ctx.sides[s].name} не скрывает эмоций.`);
+        push(m + 2, 35, "none", "crowd", [], `Трибуны гудят в ожидании, игроки спорят с арбитром — режиссёр показывает виртуальные линии крупным планом.`, { varPause: true });
+        push(m + 3, 25, o, "offside", [att], `ГОЛ ОТМЕНЁН! ВАР зафиксировал миллиметровый офсайд у ${ctx.names[att]}. Счёт остаётся прежним.`, { disallowedGoal: true });
+        m += 3;
+      } else if (varKind < 0.8) {
+        push(m, 12, s, "highlight", [att, def], `Спорное падение ${ctx.names[att]} в штрафной ${ctx.sides[o].name} после контакта с ${ctx.names[def]} — арбитр слушает ВАР.`);
+        push(m, 35, "none", "var", [att, def], `Идёт долгая проверка ВАР на возможный пенальти. Игроки обступили судью.`);
+        push(m + 1, 18, "none", "commentator_intro", [], `В эфире крутят замедленный повтор из-за ворот — комментаторы спорят, был ли достаточный контакт для фола в штрафной.`, { varPause: true });
+        push(m + 2, 10, "none", "var", [def], `Арбитра приглашают к монитору у бровки! Трибуны гудят, пауза затягивается.`);
+        push(m + 2, 55, "none", "crowd", [], `Стадион замер, пока главный судья оценивает повтор у кромки поля под свист и крики болельщиков.`, { varPause: true });
+        const penTaker = onPitchTaker("penalty") || att;
+        push(m + 3, 40, s, "penalty", [penTaker], `Решение принято после просмотра монитора: пенальти в ворота ${ctx.sides[o].name}!`);
+        const gk = Q.find((p) => ctx.pos[p] === "ВР") || null;
+        if (R() < 0.76) {
+          push(m + 4, 5, s, "goal", [penTaker], `ГОЛ! ${ctx.names[penTaker]} уверенно реализует пенальти!`);
+        } else if (gk) {
+          push(m + 4, 5, o, "save", [gk, penTaker], `${ctx.names[gk]} тащит пенальти! Фантастическое спасение!`);
+        } else {
+          push(m + 4, 5, s, "miss", [penTaker], `${ctx.names[penTaker]} бьёт с точки мимо створа!`);
+        }
+        m += 4;
+      } else {
+        push(m, 18, s, "shot", [att], `Острый удар ${ctx.names[att]} из штрафной!`);
+        push(m, 22, s, "highlight", [att], `Мяч оказывается в воротах ${ctx.sides[o].name}, но ${ctx.sides[o].name} сигнализируют о фоле в атаке.`);
+        push(m, 40, "none", "var", [att], `ВАР проверяет чистоту взятия ворот. Трибуны замерли в ожидании вердикта.`);
+        push(m + 1, 25, "none", "commentator_intro", [], `Режиссёр показывает повтор борьбы перед голом с двух камер — комментаторы отмечают, что единоборство было в пределах правил.`, { varPause: true });
+        push(m + 2, 15, s, "goal", [att], `ГОЛ ЗАСЧИТАН! ВАР подтвердил: взятие ворот ${ctx.names[att]} по правилам!`);
+        m += 2;
+      }
     }
   }
-  if (b === 45) push(45, 59, "none", "halftime", [], "Перерыв.");
-  if (b >= 90) push(90, 59, "none", "fulltime", [], "Матч окончен.");
+  const lastEvMin = ev.length ? ev[ev.length - 1].min : b;
+  if (b === 45) push(Math.max(45, lastEvMin), 59, "none", "halftime", [], "Перерыв.");
+  if (b >= 90) push(Math.max(90, lastEvMin), 59, "none", "fulltime", [], "Матч окончен.");
   return ev;
 }
 async function genPeriod(a, b, ctx, prev, note, depth = 0) {
@@ -7920,6 +8126,17 @@ async function genPeriod(a, b, ctx, prev, note, depth = 0) {
       if (!ctx.prompt1) ctx.prompt1 = user;
       const r = await llmJSON(sys, user, { task: "match", temp: 0.9, max: 3e4 });
       const rawEvents = Array.isArray(r) ? r : r?.events || r?.match_events || [];
+      if (r?._repaired && b - a >= 14 && depth < 2) {
+        const lastRawMin = rawEvents.reduce((mx, x) => {
+          const pm = parseEventMinSec(x || {});
+          return Number.isFinite(pm.min) && pm.min > mx ? pm.min : mx;
+        }, a - 1);
+        const missingHt = b === 45 && !rawEvents.some((x) => normalizeEventType(x?.type) === "halftime");
+        const missingFt = b >= 90 && !rawEvents.some((x) => normalizeEventType(x?.type) === "fulltime");
+        if (lastRawMin < b - 5 || missingHt || missingFt) {
+          throw new Error("ответ ИИ оборвался до завершения отрезка");
+        }
+      }
       const evs = normalizeEvents(rawEvents, a, b, ctx, prev);
       return { events: evs, note: r?.state_at_end?.momentum_note || note };
     } catch (e: any) {
@@ -8357,12 +8574,7 @@ ${esc(compName(f))}, ${esc(roundLabel(f))}
     tgEvent(f, e);
     save();
     const nx = m.events[f.pos];
-    let d = 1500;
-    if (nx) {
-      const dm = (nx.min * 60 + nx.sec - (e.min * 60 + e.sec)) / 60;
-      d = clamp(dm * db.settings.secPerMin * 1e3, Math.min(900, db.settings.secPerMin * 1e3), 2e4);
-      if (e.type === "halftime") d = Math.max(d, db.settings.breakSec * 1e3);
-    }
+    const d = computeLiveEventDelayMs(e, nx, db.settings);
     timers[id] = setTimeout(step, d);
   };
   step();
@@ -8725,7 +8937,7 @@ var TGI = {
   cooling_break: "\u{1F4A7}"
 };
 function tgEvent(f, e) {
-  if (!e) return;
+  if (!e || e.varPause) return;
   const icon = TGI[e.type] || "\u26A1";
   const hName = esc(tn(f.home));
   const aName = esc(tn(f.away));

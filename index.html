@@ -306,6 +306,10 @@ a.fxl{color:inherit}a.fxl:hover{background:var(--soft);text-decoration:none}
 .ev.goal{background:#e3f4e8;border-left:4px solid var(--green2);padding-left:8px;font-weight:600}
 .ev.red{background:#fde8e6;border-left:4px solid var(--red);padding-left:8px}
 .ev .pl{font-size:12.5px;color:var(--muted)}
+.var-live-banner{display:flex;align-items:center;gap:10px;padding:11px 14px;margin-bottom:10px;border-radius:10px;background:#fef3c7;border:1.5px solid #f59e0b;color:#78350f;font-size:13.5px;font-weight:600}
+.var-live-banner.complex{background:#fee2e2;border-color:#dc2626;color:#7f1d1d}
+.var-live-dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:currentColor;flex-shrink:0;animation:pulse 1s infinite}
+@media(prefers-reduced-motion:reduce){.var-live-dot{animation:none}}
 .bar2{display:grid;grid-template-columns:54px 1fr 54px;gap:10px;align-items:center;margin:9px 0}
 .bar2 .v{font-weight:700}.bar2 .v:last-child{text-align:right}
 .bar2 .c{text-align:center;font-size:13px;color:var(--muted)}
@@ -3569,6 +3573,32 @@ ${motm && motmPlayer ? `
 function paintMatch() {
   const f = M.fixture, id = f.id;
   $('#sc') && ($('#sc').textContent = f.hg == null ? '—' : f.hg + ' : ' + f.ag);
+  const isVarConcluded = t => /(?:решени[ея]\s+принят|вердикт|окончательн[а-яё]*\s+решени|отмен[её]н|отменя[ею]т|не\s+засчитан|не\s+засчитыва|подтвержд|засчитан|в\s+силе|назначен\s+пенальти|пенальти\s+назначен|пенальти\s+не\s+будет|нет\s+пенальти|указ[аы]вает\s+на\s+точку|став[ия]т\s+на\s+точку|игра\s+продолж|спорный\s+мяч|красная\s+отмен|красную\s+карточку\s+отмен|оста[её]т[а-яё]*\s+первоначальн|гол\s+засчитан|нет\s+гола)/i.test(t || '');
+  const isComplexTxt = t => /(?:монит|экран|бровк|лини[ияюей]|миллиметр|погранич|сложн|спорн|красн|удален|пенальти|рукой|игр[аеу]\s+рукой|долг|затягива|офсайд|напряжен)/i.test(t || '');
+  let isOngoingVar = false, isComplexVar = false;
+  if (f.status === 'live' && evs.length) {
+    const endT = (evs[evs.length - 1].min || 0) * 60 + (evs[evs.length - 1].sec || 0);
+    for (let idx = evs.length - 1; idx >= Math.max(0, evs.length - 8); idx--) {
+      const ev = evs[idx];
+      const dt = endT - ((ev.min || 0) * 60 + (ev.sec || 0));
+      if (dt > 360 || ev.min < 0) break;
+      if (['goal', 'own_goal', 'penalty', 'offside', 'red', 'ref_error', 'kickoff', 'halftime', 'fulltime'].includes(ev.type)) break;
+      if (ev.type === 'var' && isVarConcluded(ev.text)) break;
+      if (isComplexTxt(ev.text)) isComplexVar = true;
+      if (ev.type === 'var' || ev.varPause) {
+        isOngoingVar = true;
+        if (idx < evs.length - 1 && evs[idx + 1]?.type === 'var') isComplexVar = true;
+      } else if (!['commentator_intro', 'crowd', 'tactical_note', 'verbal_warning', 'highlight'].includes(ev.type)) {
+        break;
+      }
+    }
+  }
+  const subEl = $('#sub');
+  if (subEl && f.status === 'live') {
+    subEl.innerHTML = isOngoingVar
+      ? `<span class="live-dot"></span>Идёт матч · 📺 ${isComplexVar ? 'Сложная проверка ВАР…' : 'Идёт проверка ВАР…'}`
+      : '<span class="live-dot"></span>Идёт матч';
+  }
   const b = $('#mbody');
   if (!b) return;
 
@@ -3577,9 +3607,12 @@ function paintMatch() {
       b.innerHTML = `<div class="empty panel">${f.status === 'scheduled' ? 'Трансляция начнётся, когда матч будет запущен.' : 'Ждём первые события…'}</div>`;
       return;
     }
-    b.innerHTML = '<div class="panel">' + [...evs].reverse().map(x => {
+    const varBanner = isOngoingVar
+      ? `<div class="var-live-banner ${isComplexVar ? 'complex' : ''}"><span class="var-live-dot"></span><div><b>📺 ${isComplexVar ? 'СЛОЖНАЯ ПРОВЕРКА ВАР' : 'ИДЁТ ПРОВЕРКА ВАР'}</b> · ${isComplexVar ? 'Арбитры изучают сложный эпизод (линии / монитор), напряжение растёт — ждём официального решения…' : 'Видеоассистенты проверяют эпизод — ждём решения арбитра…'}</div></div>`
+      : '';
+    b.innerHTML = varBanner + '<div class="panel">' + [...evs].reverse().map(x => {
       const isGoal = x.type === 'goal' || x.type === 'own_goal';
-      const cls = isGoal ? 'goal' : x.type === 'red' ? 'red' : ['yellow', 'injury', 'penalty', 'var', 'ref_error', 'highlight', 'incident', 'halftime', 'fulltime'].includes(x.type) || x.disallowedGoal ? 'key' : '';
+      const cls = isGoal ? 'goal' : x.type === 'red' ? 'red' : ['yellow', 'injury', 'penalty', 'var', 'ref_error', 'highlight', 'incident', 'halftime', 'fulltime'].includes(x.type) || x.disallowedGoal || x.varPause ? 'key' : '';
       const tLogo = x.team === 'home' ? (f.homeLogo || teamLogo(f.home)) : (x.team === 'away' ? (f.awayLogo || teamLogo(f.away)) : null);
       const scoreBadge = isGoal
         ? `<div class="pl"><b>${x.type === 'own_goal' ? '⚽ АВТОГОЛ' : '⚽ ГОЛ'} · ${x.score[0]}:${x.score[1]}</b></div>`
