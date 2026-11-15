@@ -3578,12 +3578,20 @@ function paintMatch() {
       return;
     }
     b.innerHTML = '<div class="panel">' + [...evs].reverse().map(x => {
-      const cls = x.type === 'goal' || x.type === 'own_goal' ? 'goal' : x.type === 'red' ? 'red' : ['yellow', 'injury', 'penalty', 'var', 'ref_error', 'highlight', 'incident', 'halftime', 'fulltime'].includes(x.type) ? 'key' : '';
+      const isGoal = x.type === 'goal' || x.type === 'own_goal';
+      const cls = isGoal ? 'goal' : x.type === 'red' ? 'red' : ['yellow', 'injury', 'penalty', 'var', 'ref_error', 'highlight', 'incident', 'halftime', 'fulltime'].includes(x.type) || x.disallowedGoal ? 'key' : '';
       const tLogo = x.team === 'home' ? (f.homeLogo || teamLogo(f.home)) : (x.team === 'away' ? (f.awayLogo || teamLogo(f.away)) : null);
+      const scoreBadge = isGoal
+        ? `<div class="pl"><b>${x.type === 'own_goal' ? '⚽ АВТОГОЛ' : '⚽ ГОЛ'} · ${x.score[0]}:${x.score[1]}</b></div>`
+        : x.disallowedGoal && Array.isArray(x.score)
+          ? `<div class="pl"><b style="color:var(--red)">🚫 ГОЛ ОТМЕНЁН · счёт ${x.score[0]}:${x.score[1]}</b></div>`
+          : (x.type === 'halftime' || x.type === 'fulltime') && Array.isArray(x.score)
+            ? `<div class="pl"><b>${x.type === 'halftime' ? '⏸ Перерыв' : '🏁 Итог'} · ${x.score[0]}:${x.score[1]}</b></div>`
+            : '';
       return `<div class="ev ${cls}">
         <div class="m">${x.min < 0 ? 'до матча' : fmtEvT(x)}</div>
         <div>${tLogo ? `<img class="t-logo" src="${tLogo}" alt=""/>` : (EVI[x.type] || '·')}</div>
-        <div>${e(x.text)}${cls && x.players?.length ? `<div class="pl">${e(x.players.join(', '))}</div>` : ''}${x.type === 'goal' || x.type === 'own_goal' ? `<div class="pl"><b>${x.score[0]}:${x.score[1]}</b></div>` : ''}</div>
+        <div>${e(x.text)}${cls && x.players?.length ? `<div class="pl">${e(x.players.join(', '))}</div>` : ''}${scoreBadge}</div>
       </div>`;
     }).join('') + '</div>';
   } else if (mtab === 'stats') {

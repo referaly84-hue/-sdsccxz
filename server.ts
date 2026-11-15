@@ -2965,13 +2965,20 @@ try {
 • Допустимые типы прематча: commentator_intro, lineup, tactical_note, stat_display, crowd, walkout, anthem, coin_toss, photo, warmup, kickoff_buildup, incident.
 • 0.8 (постматч): после fulltime в конце 2-го тайма можно добавить 1–3 коротких события (min от 90 до 95) с типами crowd, tactical_note или incident.
 
+═══ РАЗДЕЛ 1: ГОЛЫ, ОПАСНЫЕ МОМЕНТЫ, ОТМЕНА ГОЛА И СЧЁТ (СТРОГО!) ═══
+• Движок подсчитывает счёт, бомбардиров и статистику ИСКЛЮЧИТЕЛЬНО по событиям с "type": "goal" или "type": "own_goal".
+• Гол засчитан = ОБЯЗАТЕЛЬНО отдельное событие "type": "goal" (или "own_goal" при автоголе), после чего счёт на табло меняется (+1). В событии "goal" в "team" указывай забившую команду, в "players" — [автор гола] или [автор гола, ассистент]. В "own_goal" в "team" указывай команду, В ПОЛЬЗУ КОТОРОЙ засчитан гол (кому прибавляется +1 на табло), а в "players" — [игрок, срезавший мяч в свои ворота].
+• Если гола НЕТ (удар отбит вратарём, заблокирован, прошёл мимо, попал в штангу/перекладину) — ЗАПРЕЩЕНО писать в тексте «ГОЛ!», «мяч в сетке!», «счёт открыт», «1:0» и т.п. В самом событии "shot", "freekick" или "penalty" описывай только сам удар без иллюзии гола, а сразу следом в той же минуте (через 2–5 секунд) ставь точный исход отдельным событием: "goal" / "own_goal" (если забит), "save" (если спас вратарь), "miss" (если мимо/выше), "post" (если каркас ворот) или "tackle" (если заблокировали).
+• Если мяч попал в ворота, но гол ОТМЕНЁН / НЕ ЗАСЧИТАН (офсайд, фол, игра рукой, отмена после VAR) — НИ В КОЕМ СЛУЧАЕ не ставь этому эпизоду "type": "goal" или "own_goal"! Оформляй такой эпизод через "shot" / "highlight" -> "var" / "offside" / "foul" и ПРЯМО и ОДНОЗНАЧНО пиши в тексте: «ГОЛ ОТМЕНЁН!» или «ГОЛ НЕ ЗАСЧИТАН!» с указанием причины и того, что счёт остался прежним (например: «Счёт остаётся 0:0!»).
+• Строгое соответствие счёта: во всех репликах ("goal", "halftime", "fulltime", "crowd", "tactical_note") называй ТОЛЬКО реальный счёт по уже случившимся событиям "goal"/"own_goal" и ТОЛЬКО их реальных авторов. Если голов не было — счёт 0:0, не выдумывай голы задним числом!
+
 ═══ РАЗДЕЛ 10: ФОРМАТ ВЫВОДА (СТРОГО JSON) ═══
 Верни строго один JSON-объект без markdown-обёртки:
 {
   "events": [
     {
-      "min": целое число (-15..-1 для прематча, 1..95+ для игры),
-      "sec": целое число 0..59,
+      "min": целое число без ведущих нулей (-15..-1 для прематча, 1..95+ для игры),
+      "sec": целое число 0..59 БЕЗ ведущих нулей (пиши 5, а НЕ 05; пиши 0, а НЕ 00),
       "team": "home" | "away" | "none",
       "type": "ОДИН ИЗ ДОПУСТИМЫХ ТИПОВ НИЖЕ",
       "players": ["Точное Имя Фамилия из состава"],
@@ -2987,7 +2994,7 @@ try {
 ДОПУСТИМЫЕ ЗНАЧЕНИЯ ПОЛЯ "type" (НИКАКИХ ДРУГИХ ТИПОВ НЕ ПРИДУМЫВАЙ):
 • Игровые: kickoff, possession, pass, dribble, tackle, duel, foul, yellow, red, shot, save, miss, post, goal, own_goal, penalty, offside, corner, freekick, injury, sub, var, ref_error, incident, cooling_break, kit_issue, verbal_warning, highlight, halftime, fulltime.
 • Прематч (только min -15..-1 в 1-м отрезке): commentator_intro, tactical_note, stat_display, crowd, incident, lineup, walkout, anthem, coin_toss, photo, warmup, kickoff_buildup.
-• Не выдумывай типы вроде prematch_lineups, throw_in, aerial — используй вместо них lineup, pass, duel.`;
+• Не выдумывай типы вроде prematch_lineups, throw_in, aerial, disallowed_goal — для отменённого гола используй var / offside / foul.`;
 }
 var uid = () => crypto3.randomBytes(5).toString("hex");
 var mkCode = () => {
@@ -5982,8 +5989,16 @@ async function llm(sys, user, { json = true, task = "", temp = 0.9, max = 16e3, 
 }
 function repairJsonCandidate(raw: string) {
   let out = "";
+  let nonStr = "";
   let inStr = false;
   let esc = false;
+  const flushNonStr = () => {
+    if (!nonStr) return;
+    out += nonStr
+      .replace(/([:\[,]\s*-?)0+(\d+)/g, "$1$2")
+      .replace(/([:\[,]\s*)\+(\d+)/g, "$1$2");
+    nonStr = "";
+  };
   for (let i = 0; i < raw.length; i++) {
     const ch = raw[i];
     if (inStr) {
@@ -6010,6 +6025,7 @@ function repairJsonCandidate(raw: string) {
       continue;
     }
     if (ch === "\"") {
+      flushNonStr();
       inStr = true;
       out += ch;
       continue;
@@ -6018,8 +6034,9 @@ function repairJsonCandidate(raw: string) {
       while (i < raw.length && raw[i] !== "\n") i++;
       continue;
     }
-    out += ch;
+    nonStr += ch;
   }
+  flushNonStr();
   return out.replace(/,\s*([}\]])/g, "$1");
 }
 function recoverTruncatedEventsJson(t: string) {
@@ -7129,21 +7146,23 @@ function buildUser(ctx, a, b, st, issues, mode = "full") {
 
 `;
   if (st) {
-    u += `\u0422\u0415\u041A\u0423\u0429\u0415\u0415 \u0421\u041E\u0421\u0422\u041E\u042F\u041D\u0418\u0415 \u041C\u0410\u0422\u0427\u0410 (\u043A \u043C\u0438\u043D\u0443\u0442\u0435 ${a}):
+    u += `ТЕКУЩЕЕ СОСТОЯНИЕ МАТЧА (к минуте ${a}):
 `;
-    u += `- \u0421\u0447\u0451\u0442: ${H} ${st.score[0]}:${st.score[1]} ${A}
+    u += `- Счёт: ${H} ${st.score[0]}:${st.score[1]} ${A}
 `;
-    u += `- \u041F\u0440\u0435\u0434\u0443\u043F\u0440\u0435\u0436\u0434\u0435\u043D\u0438\u044F (\u0416\u041A): ${H}: ${st.yellows.home.join(", ") || "\u043D\u0435\u0442"} | ${A}: ${st.yellows.away.join(", ") || "\u043D\u0435\u0442"}
+    u += `- Забитые голы до этой минуты: ${st.scorers?.length ? st.scorers.join("; ") : "голов пока не было (счёт 0:0)"}
 `;
-    u += `- \u0423\u0434\u0430\u043B\u0435\u043D\u0438\u044F (\u041A\u041A): ${st.reds.join(", ") || "\u043D\u0435\u0442"}
+    u += `- Предупреждения (ЖК): ${H}: ${st.yellows.home.join(", ") || "нет"} | ${A}: ${st.yellows.away.join(", ") || "нет"}
 `;
-    u += `- \u041F\u043E\u043A\u0438\u043D\u0443\u043B\u0438 \u043F\u043E\u043B\u0435 (\u0442\u0440\u0430\u0432\u043C\u0430/\u0437\u0430\u043C\u0435\u043D\u0430): ${st.off.join(", ") || "\u043D\u0435\u0442"}
+    u += `- Удаления (КК): ${st.reds.join(", ") || "нет"}
 `;
-    u += `- \u0418\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u043D\u043E \u0437\u0430\u043C\u0435\u043D: ${H} ${st.subs.home}/5 \u0438\u0433\u0440\u043E\u043A\u043E\u0432 \u0432 ${st.slots.home}/3 \u043E\u043A\u043D\u0430\u0445, ${A} ${st.subs.away}/5 \u0438\u0433\u0440\u043E\u043A\u043E\u0432 \u0432 ${st.slots.away}/3 \u043E\u043A\u043D\u0430\u0445 (\u0432\u044B\u0448\u043B\u0438: ${st.ins.join(", ") || "\u043D\u0435\u0442"}). \u041D\u043E\u0432\u043E\u0435 \u043E\u043A\u043D\u043E \u0437\u0430\u043C\u0435\u043D \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0442\u044C \u043C\u043E\u0436\u043D\u043E, \u0442\u043E\u043B\u044C\u043A\u043E \u0435\u0441\u043B\u0438 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u043D\u043E \u043C\u0435\u043D\u044C\u0448\u0435 3.
+    u += `- Покинули поле (травма/замена): ${st.off.join(", ") || "нет"}
 `;
-    if (st.note) u += `- \u0425\u043E\u0434 \u0438\u0433\u0440\u044B \u0438 \u043C\u043E\u043C\u0435\u043D\u0442\u0443\u043C: ${st.note}
+    u += `- Использовано замен: ${H} ${st.subs.home}/5 игроков в ${st.slots.home}/3 окнах, ${A} ${st.subs.away}/5 игроков в ${st.slots.away}/3 окнах (вышли: ${st.ins.join(", ") || "нет"}). Новое окно замен открывать можно, только если использовано меньше 3.
 `;
-    u += `- \u0425\u0440\u043E\u043D\u0438\u043A\u0430 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0438\u0445 \u043C\u0438\u043D\u0443\u0442: ${st.last.join(" | ") || "\u043D\u0430\u0447\u0430\u043B\u043E \u0432\u0441\u0442\u0440\u0435\u0447\u0438"}
+    if (st.note) u += `- Ход игры и моментум: ${st.note}
+`;
+    u += `- Хроника последних минут: ${st.last.join(" | ") || "начало встречи"}
 
 `;
   }
@@ -7431,6 +7450,26 @@ var EVENT_TYPE_ALIASES: Record<string, string> = {
   var_check: "var",
   var_review: "var",
   video_review: "var",
+  disallowed_goal: "var",
+  goal_disallowed: "var",
+  cancelled_goal: "var",
+  goal_cancelled: "var",
+  canceled_goal: "var",
+  goal_canceled: "var",
+  no_goal: "var",
+  var_disallowed: "var",
+  var_no_goal: "var",
+  var_offside: "offside",
+  offside_goal: "offside",
+  goal_offside: "offside",
+  penalty_goal: "goal",
+  header_goal: "goal",
+  freekick_goal: "goal",
+  direct_goal: "goal",
+  scored: "goal",
+  og: "own_goal",
+  owngoal: "own_goal",
+  own_goal_scored: "own_goal",
   referee_error: "ref_error",
   ref_mistake: "ref_error",
   water_break: "cooling_break",
@@ -7494,11 +7533,15 @@ function resolve(idx, name, side) {
   const last = n.split(" ").pop();
   return pick(idx.filter((x) => x.last === last));
 }
-function deriveState(events, ctx, note) {
-  const st = { score: [0, 0], yellows: { home: [], away: [] }, reds: [], off: [], subs: { home: 0, away: 0 }, subT: { home: [], away: [] }, slots: { home: 0, away: 0 }, ins: [], note: note || "", last: events.slice(-8).map((e) => `${e.min}' ${e.text}`) };
+function deriveState(events, ctx, note?: any) {
+  const st = { score: [0, 0], scorers: [] as string[], yellows: { home: [], away: [] }, reds: [], off: [], subs: { home: 0, away: 0 }, subT: { home: [], away: [] }, slots: { home: 0, away: 0 }, ins: [], note: note || "", last: events.slice(-8).map((e) => `${e.min}' ${e.text}`) };
   for (const e of events) {
-    if (e.type === "goal") st.score[e.team === "home" ? 0 : 1]++;
-    if (e.type === "own_goal") st.score[e.team === "home" ? 0 : 1]++;
+    if (e.type === "goal" || e.type === "own_goal") {
+      st.score[e.team === "home" ? 0 : 1]++;
+      const tName = ctx.sides?.[e.team]?.name || (e.team === "home" ? "Хозяева" : "Гости");
+      const pName = (e.pids?.[0] && ctx.names?.[e.pids[0]]) || e.players?.[0] || "";
+      st.scorers.push(`${e.min}' ${pName ? pName + " " : ""}(${e.type === "own_goal" ? "автогол -> " : ""}${tName})`);
+    }
     const nm = (i) => ctx.names[e.pids?.[i]];
     if (e.type === "yellow" && nm(0)) st.yellows[e.team]?.push(nm(0));
     if (e.type === "red" && nm(0)) {
@@ -7516,9 +7559,15 @@ function deriveState(events, ctx, note) {
   st.slots = { home: subWindows(st.subT.home), away: subWindows(st.subT.away) };
   return st;
 }
+function isDisallowedGoalText(txt: string) {
+  const s = String(txt || "");
+  const cancelRe = /(?:гол[а-яё]*\s+(?:не\s+засчитан|отмен[её]н|отменя[ею]т[а-яё]*)|(?:не\s+засчитыва[а-яё]+|отменя[а-яё]+)\s+(?:гол|взятие\s+ворот)|взятие\s+ворот\s+(?:отменено|не\s+засчитано)|(?:гол|мяч)\s+(?:отмен[её]н|не\s+засчитан)|нет\s+гола|сч[её]т\s+оста[её]тся\s+прежним|сч[её]т\s+не\s+изменился|(?:отмен[её]н|не\s+засчитан)\s+из-за\s+(?:офсайда|фола|руки|игры\s+рукой))/i;
+  const confirmRe = /(?:(?:гол|взятие\s+ворот)\s+(?:подтвержд|засчитан|в\s+силе)|подтвержда[а-яё]+\s+гол|оста[её]т[а-яё]*\s+гол\s+в\s+силе)/i;
+  return cancelRe.test(s) && !confirmRe.test(s);
+}
 function normalizeEvents(raw, a, b, ctx, prev, minEv = 3) {
   if (!Array.isArray(raw) || raw.length < minEv) throw new Error("\u0441\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u0430\u043B\u043E \u0441\u043E\u0431\u044B\u0442\u0438\u0439");
-  const idx = indexNames(ctx), probs = [], unknown = /* @__PURE__ */ new Set();
+  const idx = indexNames(ctx), probs = [], fatalProbs: string[] = [], unknown = /* @__PURE__ */ new Set();
   const st = deriveState(prev, ctx);
   const off = new Set(st.off.map(norm));
   const subs = { ...st.subs };
@@ -7539,6 +7588,7 @@ function normalizeEvents(raw, a, b, ctx, prev, minEv = 3) {
       } else if (type === "fulltime") {
         min = 90;
       } else {
+        if (type === "goal" || type === "own_goal") fatalProbs.push("у события гола отсутствует минута");
         probs.push("\u043D\u0435\u0442 \u043C\u0438\u043D\u0443\u0442\u044B");
         continue;
       }
@@ -7554,6 +7604,7 @@ function normalizeEvents(raw, a, b, ctx, prev, minEv = 3) {
           type = "commentator_intro";
           min = clamp(min, -20, -1);
         } else {
+          if (type === "goal" || type === "own_goal") fatalProbs.push("у события гола некорректная минута");
           probs.push("\u043D\u0435\u0442 \u043C\u0438\u043D\u0443\u0442\u044B");
           continue;
         }
@@ -7564,12 +7615,13 @@ function normalizeEvents(raw, a, b, ctx, prev, minEv = 3) {
         min = clamp(min, -20, -1);
       }
     } else if (min < a - 1 || min > b + 10) {
+      if (type === "goal" || type === "own_goal") fatalProbs.push(`гол на минуте ${min} вне периода ${a}–${b}`);
       probs.push(`\u043C\u0438\u043D\u0443\u0442\u0430 ${min} \u0432\u043D\u0435 \u043F\u0435\u0440\u0438\u043E\u0434\u0430 ${a}\u2013${b}`);
       continue;
     }
     const pids = [], names = [];
     for (const n of Array.isArray(e.players) ? e.players : []) {
-      const pid = resolve(idx, n, ["home", "away"].includes(e.team) && !["save", "sub", "foul", "tackle"].includes(type) ? e.team : null);
+      const pid = resolve(idx, n, ["home", "away"].includes(e.team) && !["save", "sub", "foul", "tackle", "own_goal"].includes(type) ? e.team : null);
       if (pid) {
         pids.push(pid);
         names.push(ctx.names[pid]);
@@ -7577,9 +7629,22 @@ function normalizeEvents(raw, a, b, ctx, prev, minEv = 3) {
     }
     let team2 = ["home", "away", "none"].includes(e.team) ? e.team : null;
     if (!team2) team2 = pids[0] ? ctx.pidSide[pids[0]] : "none";
-    if (type === "own_goal" && !["home", "away"].includes(team2)) {
-      probs.push("\u0430\u0432\u0442\u043E\u0433\u043E\u043B \u0431\u0435\u0437 \u043A\u043E\u043C\u0430\u043D\u0434\u044B");
-      continue;
+    if (type === "own_goal") {
+      if (pids[0] && ctx.pidSide[pids[0]] && team2 === ctx.pidSide[pids[0]]) {
+        team2 = ctx.pidSide[pids[0]] === "home" ? "away" : "home";
+      }
+      if (!["home", "away"].includes(team2)) {
+        fatalProbs.push("\u0430\u0432\u0442\u043E\u0433\u043E\u043B \u0431\u0435\u0437 \u043A\u043E\u043C\u0430\u043D\u0434\u044B");
+        continue;
+      }
+    }
+    const evText = String(e.text || "").slice(0, 500);
+    let disallowedGoal = false;
+    if ((type === "goal" || type === "own_goal") && isDisallowedGoalText(evText)) {
+      type = /вар|var|монитор|видео/i.test(evText) ? "var" : /офсайд|вне\s+игры/i.test(evText) ? "offside" : "highlight";
+      disallowedGoal = true;
+    } else if (["var", "offside", "ref_error", "highlight"].includes(type) && isDisallowedGoalText(evText)) {
+      disallowedGoal = true;
     }
     const actor = type === "sub" || type === "save" ? null : pids[0];
     if (actor && off.has(norm(ctx.names[actor])) && !["yellow", "red", "injury", "foul"].includes(type) && !NONACT_TYPES.has(type)) {
@@ -7618,7 +7683,8 @@ function normalizeEvents(raw, a, b, ctx, prev, minEv = 3) {
       }
       if (pids[1]) off.add(norm(ctx.names[pids[1]]));
     }
-    const ev = { min, sec, team: team2, type, players: names, pids, text: String(e.text || "").slice(0, 500) };
+    const ev: any = { min, sec, team: team2, type, players: names, pids, text: evText };
+    if (disallowedGoal) ev.disallowedGoal = true;
     if (type === "shot" || type === "penalty") ev.xg = clamp(+e.xg || (type === "penalty" ? 0.76 : 0.08), 0.01, 0.95);
     if (type === "injury") ev.out_days = outDays;
     if (type === "red") {
@@ -7635,14 +7701,75 @@ function normalizeEvents(raw, a, b, ctx, prev, minEv = 3) {
     }
     out.push(ev);
   }
+  out = out.map((e, i) => ({ e, i })).sort((x, y) => x.e.min * 60 + x.e.sec - (y.e.min * 60 + y.e.sec) || x.i - y.i).map((x) => x.e);
+  // Neutralize any goal/own_goal event that is subsequently cancelled by VAR/offside/ref_error within 4 minutes
+  for (let i = 0; i < out.length; i++) {
+    const cur = out[i];
+    if (cur.type !== "goal" && cur.type !== "own_goal") continue;
+    const t0 = cur.min * 60 + (cur.sec || 0);
+    for (let j = i + 1; j < out.length; j++) {
+      const nxt = out[j];
+      const t1 = nxt.min * 60 + (nxt.sec || 0);
+      if (t1 - t0 > 240) break;
+      if (nxt.type === "goal" || nxt.type === "own_goal" || nxt.type === "kickoff") break;
+      if (["var", "offside", "ref_error", "foul", "highlight"].includes(nxt.type) && isDisallowedGoalText(nxt.text)) {
+        cur.type = "highlight";
+        cur.disallowedGoal = true;
+        nxt.disallowedGoal = true;
+        if (!/отмен|не\s+засчит|провер/i.test(cur.text)) {
+          cur.text = `${cur.text} (взятие ворот проверяется арбитрами)`;
+        }
+        break;
+      }
+    }
+  }
+  // Check for goal-scored commentary inside non-goal events without an accompanying goal/cancellation
+  if (minEv > 0) {
+    const goalClaimRe = /(?:^|[^\wа-яё])г+о+о*л+[!]|(?:мяч\s+(?:в\s+сетке|вонзается\s+в\s+сетку|влетает\s+в\s+сетку|в\s+воротах|пересекает\s+линию\s+ворот)|открывает\s+сч[её]т|сравнивает\s+сч[её]т|удваивает\s+преимущество|делает\s+сч[её]т\s+\d+:\d+|выводит\s+[^.!?\n]{1,40}\s+впер[её]д)/i;
+    const notScoredRe = /(?:отмен|не\s+засчит|нет\s+гола|офсайд|вне\s+игры|внешн[а-яё]+\s+сторон|мимо|выше\s+ворот|рядом\s+со\s+штангой|штанга|перекладин|сейв|спас|вытаск|парир|отби|накры|блокир|заблокир|на\s+угловой|проверя|вар(?![а-яё])|var(?![a-z])|оста[её]тся\s+прежним|не\s+изменился|чуть\s+было|едва\s+не|мог\s+забить)/i;
+    for (let i = 0; i < out.length; i++) {
+      const ev = out[i];
+      if (ev.min < 0 || ["goal", "own_goal", "halftime", "fulltime", "kickoff", "crowd", "tactical_note", "stat_display", "commentator_intro"].includes(ev.type)) continue;
+      if (goalClaimRe.test(ev.text) && !notScoredRe.test(ev.text)) {
+        const t0 = ev.min * 60 + (ev.sec || 0);
+        const hasNearbyGoalOrCancel = out.some((other) => {
+          const dt = Math.abs((other.min * 60 + (other.sec || 0)) - t0);
+          return dt <= 120 && (other.type === "goal" || other.type === "own_goal" || other.disallowedGoal);
+        });
+        if (!hasNearbyGoalOrCancel) {
+          fatalProbs.push(`событие ${ev.min}' (${ev.type}) описывает гол без события type='goal' (если гол не забит или отменён — не пиши о голе)`);
+        }
+      }
+    }
+    // Verify halftime/fulltime/goal score mentions match actual goal/own_goal count
+    let runH = st.score[0], runA = st.score[1];
+    for (const ev of out) {
+      if (ev.type === "goal" || ev.type === "own_goal") {
+        if (ev.team === "home") runH++;
+        else if (ev.team === "away") runA++;
+      }
+      if (ev.min >= 0 && ["goal", "own_goal", "halftime", "fulltime"].includes(ev.type)) {
+        if (ev.type === "fulltime" && /сери[яи]\s+пенальти|по\s+пенальти/i.test(ev.text)) continue;
+        const scRe = /(?:сч[её]т[а-яё]*\s+|побед[а-яё]*[^.!?\n]{0,30}|ничь[а-яё]*[^.!?\n]{0,15}|вед[её]т[^.!?\n]{0,25}|уступа[а-яё]*[^.!?\n]{0,25}|при\s+сч[её]те\s+|—\s*|^\s*)(\d{1,2})\s*:\s*(\d{1,2})(?![:\d])/gi;
+        let sm;
+        while ((sm = scRe.exec(ev.text)) !== null) {
+          const x = Number(sm[1]), y = Number(sm[2]);
+          if (x <= 15 && y <= 15 && !((x === runH && y === runA) || (x === runA && y === runH))) {
+            fatalProbs.push(`в событии ${ev.min}' (${ev.type}) указан счёт ${x}:${y}, хотя по событиям goal/own_goal счёт ${runH}:${runA}`);
+            break;
+          }
+        }
+      }
+    }
+  }
   {
     const g = out.filter((x) => x.type === "goal" || x.type === "own_goal");
     const tot = st.score[0] + st.score[1] + g.length;
     if (tot > 15) probs.push("\u043D\u0435\u0440\u0435\u0430\u043B\u0438\u0441\u0442\u0438\u0447\u043D\u043E \u043C\u043D\u043E\u0433\u043E \u0433\u043E\u043B\u043E\u0432 (" + tot + "), \u043C\u0430\u0442\u0447 \u0434\u043E\u043B\u0436\u0435\u043D \u0432\u044B\u0433\u043B\u044F\u0434\u0435\u0442\u044C \u043A\u0430\u043A \u043D\u0430\u0441\u0442\u043E\u044F\u0449\u0438\u0439 \u0444\u0443\u0442\u0431\u043E\u043B");
   }
   if (unknown.size > 4) probs.push("\u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0435 \u0438\u0433\u0440\u043E\u043A\u0438 (\u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0439 \u0442\u043E\u043B\u044C\u043A\u043E \u0438\u0433\u0440\u043E\u043A\u043E\u0432 \u0438\u0437 \u0441\u043E\u0441\u0442\u0430\u0432\u043E\u0432): " + [...unknown].slice(0, 6).join(", "));
+  if (fatalProbs.length > 0) throw new Error([...new Set(fatalProbs)].slice(0, 4).join("; "));
   if (probs.length > 3) throw new Error([...new Set(probs)].slice(0, 6).join("; "));
-  out = out.map((e, i) => ({ e, i })).sort((x, y) => x.e.min * 60 + x.e.sec - (y.e.min * 60 + y.e.sec) || x.i - y.i).map((x) => x.e);
   if (!out.length && minEv > 0) throw new Error("\u043D\u0435\u0442 \u0432\u0430\u043B\u0438\u0434\u043D\u044B\u0445 \u0441\u043E\u0431\u044B\u0442\u0438\u0439");
   const lastMin = out.length ? out[out.length - 1].min : 90;
   if (b === 45 && !out.some((e) => e.type === "halftime")) out.push({ min: Math.max(45, lastMin), sec: 59, team: "none", type: "halftime", players: [], pids: [], text: "\u0421\u0432\u0438\u0441\u0442\u043E\u043A \u2014 \u043F\u0435\u0440\u0435\u0440\u044B\u0432." });
